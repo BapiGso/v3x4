@@ -16,6 +16,8 @@ UefiCpuPkg/UefiCpuPkg.dec
 
 [LibraryClasses]
 BaseLib
+BaseMemoryLib
+MemoryAllocationLib
 UefiLib
 UefiBootServicesTableLib
 UefiRuntimeServicesTableLib
@@ -28,5 +30,5 @@ gEfiSimpleTextOutProtocolGuid
 gEfiMpServiceProtocolGuid
 
 [Depex]
-gEfiSimpleTextOutProtocolGuid
-# gEfiMpServiceProtocolGuid
+gEfiSimpleTextOutProtocolGuid AND
+gEfiMpServiceProtocolGuid

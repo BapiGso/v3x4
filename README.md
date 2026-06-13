@@ -1,62 +1,97 @@
 # v3x4
 
+Intel(R) Xeon(R) Processor Max Effort Turbo Boost UEFI DXE driver.
 
+This fork keeps the original DXE driver flow and MSR/OC Mailbox programming model, while making the target CPU list and build path easier to maintain.
 
-Intel(R) Xeon(R) Processor Max Effort Turbo Boost UEFI DXE driver
+## Supported CPUIDs
 
-Description:
+Default CPUID whitelist:
 
-- Does the work that Intel refuses to provide (say can't be done). God Wins.
+- `0x306F0` - Haswell-EP/EX v3 early ES
+- `0x306F1` - Haswell-EP/EX v3 ES/QS
+- `0x306F2` - Haswell-EP/EX v3
+- `0x306F3` - Haswell-EP/EX v3
+- `0x306F4` - Haswell-EP/EX v3
 
-- Programs Intel(R) Xeon(R) "Haswell-E/EP(4S)/EX" E5/E7 v3 processors (cpuid = 306F2h, 306F3h, 306F4h) on X99 (single), C612 (dual), including QUAD (C602J?) and ABOVE (presumed up to 8S albeit unverified at this time) platforms to allow for maximum all-core turbo boost for all cores regardless of whether there are motherboard options present for overclocking/voltage control or not. For example, the 18-core Xeon(R) E5-2696 v3 processor has set from the factory an all-core turbo of 2.8GHz. This driver programs the highest un-fused ratio (i.e. the 1C Turbo bin) as the new Turbo bin for all boost configurations including all-core turbo. In other words, the 1C turbo bin becomes the all-core turbo bin and the E5-2696 v3 processor now demonstrates an all-core turbo of 3.8GHz!
+Experimental Broadwell-EP/EX v4 entry:
 
-- Allows for per-package, dynamic undervolting (retains PCU control while applying a fixed negative Vcore offset) IA (i.e. Core), CLR (CBo/LLC/Ring) a.k.a Uncore, and System Agent (SA) voltage domains independently which provides for higher all-core sustained clocks during heavy workloads, including AVX2 workloads
+- `0x406F1` - Xeon E5/E7 v4 / Broadwell-EP/EX, guarded by `ENABLE_BROADWELL_EP_EXPERIMENTAL`
 
-- Allows for setting static Uncore ratio for maximum performance (lowest typical access latency and accompanying maximum throughput) or setting to limit less than maximum (typical 30x). It is possible to trade cache speed for Core speed and studies show that 100MHz of Core speed-up is roughly equivalent to 1GHz of cache speed-up. That being said, lowering your Uncore power budget to make it to that next-higher Core speed bin is often a worthwhile trade-off
+Broadwell/v4 support is experimental only. The v4 OC Mailbox path may be more useful for voltage experiments/undervolting than for all-core turbo ratio unlocking, and this project does not guarantee that the turbo ratio hack works on Xeon v4.
 
-- Allows to disable CPU SVID telemetry (a.k.a. "PowerCut") which may reduce or remove altogether TDP power limitations for some system combinations. Allows to set a fixed VCCIN voltage (not recommended if available to be set in BIOS)
+To bypass CPUID validation for local experiments, add `CPUID_BYPASS_CHECK` / `0xFFFFFFFF` to `BUILD_TARGET_CPUID_WHITELIST` in `v3x4.c`. Bypass only skips the CPUID whitelist check; microcode and OC Lock checks still apply.
 
-- Driver is designed to work on up to 8S systems. Verified functional on multiple 1S, 2S, and 4S systems with accompanying modified BIOS (remove any microcode revision update patches)
+## Requirements
 
-Successful use requirements:
+- CPU microcode update revision must be `0x00000000` at driver execution time. If BIOS/firmware loads a microcode patch during POST, the driver aborts.
+- OC Lock / Overclock Enable lock bit in `MSR_FLEX_RATIO` must be clear. If it is set, the driver aborts.
+- A compatible UEFI environment with MP Services available is required. `v3x4.inf` depends on `gEfiMpServiceProtocolGuid` so the DXE driver does not load before MP Services.
+- Use at your own risk. Wrong voltage, ratio, or firmware settings can make a system unstable or unbootable until the driver is removed or firmware settings are recovered.
 
-- Haswell-E/EP(4S)/EX processor (cpuid = 306F2h, 306F3h, 306F4h) or processors. This can be overriden at compile time
+## Default Voltage Settings
 
-- CPU microcode revision patch must *not* be loaded during POST process (requires modified BIOS). Instructions on how to modify BIOS ROM image to remove microcode for external SPI programming will *not* be provided here
+By default, the driver applies a conservative IA Core undervolt and keeps other voltage behavior unchanged:
 
-- Use EFI Shellx64 or other suitable UEFI shell to set automatic load (and execution) of v3x4.efi during system boot.  Use cmd ' bcfg driver add 0 fs1:\EFI\Boot\v3x4.efi "V3 Full Turbo" ' where 'fs1:\EFI\Boot\v3x4.efi' is path to DXE driver file on UEFI boot partition (use cmd 'mountvol x: /s' to mount in Windows as drive X: for writing) {Note: there is a bug which prevents accessing the mounted drive through File Explorer in Windows 10 build 1803. Workaround is to open Task Manager and use new process launch dialog to navigate to mounted drive and copy directly}. Toggle enable/disable in BIOS (if presented as an option; default: enabled)
+- `IACORE_ADAPTIVE_OFFSET[] = _FVID_MINUS_50_MV` (`-50mV`)
+- `CLR_ADAPTIVE_OFFSET[] = _DEFAULT_FVID` (`0x0`)
+- `SA_ADAPTIVE_OFFSET[] = _DEFAULT_FVID` (`0x0`)
+- `SVID_FIXED_VCCIN[] = _DYNAMIC_SVID` (`0x0`)
+- `CPU_SET_FIXED_VCCIN = FALSE`
 
-"Features:"
-- If you program too great a negative of an offset voltage for any of the enabled domains, this is the equivalent of setting too low a VID in BIOS and expecting your system to be remain stable. Since this is always done (no recovery), then to recover you would need to temporarily disconnect the disk source for the driver binary (preventing load with automatic bypass). Similiar to the trial-and-error method of overclocking, so will there be here, too
-- Driver will abort if microcode revision update patch detected and there is no point in defeating this feature as this is a hard requirement for successful driver execution
-- Driver will abort if not expected CPUID. This can be programmed to whatever you want or entirely overridden using special build flag at compile time. At this time, only Haswell-E/EP(4S)/EX has been verified workable
+In other words, default builds apply only the IA Core `-50mV` adaptive offset unless these constants are edited before compiling.
 
-To COMPILE for point-releases, in Windows:
+## Runtime Logs
 
-1) Download and install UDK2015: http://www.tianocore.org/udk/udk2015/
-Note: will also in turn require Windows 2003 DDK 3790.1830 installed (separate download)
+During package validation, the driver prints:
 
-2) Any C-compiler that is supported by UDK2015. Currently verified working with Visual Studio 2015
+- Current CPUID
+- Full target CPUID whitelist
+- Full 32-bit microcode revision from `MSR_IA32_BIOS_SIGN_ID`
+- OC Lock state and raw `MSR_FLEX_RATIO` value
+- Experimental warning when the Broadwell/v4 entry is enabled and matched
 
-3) Edit file [UDK2015]/BaseTools/Conf/target.txt to change and/or verify proper the following parameters:
+## GitHub Actions Release Build
 
-ACTIVE_PLATFORM = MdeModulePkg/MdeModulePkg.dsc
+The workflow in `.github/workflows/build.yml` builds on Ubuntu with modern edk2 and `GCC5`. It is intended to run when a version tag is pushed:
 
-TARGET = RELEASE
+- Target: `RELEASE`
+- Architecture: `X64`
+- Main artifact: `v3x4.efi`
+- Optional artifact: `v3x4.ffs` generated with `GenSec` + `GenFfs` when available
+- Release upload: artifacts are attached to the GitHub Release for the pushed tag
 
-TARGET_ARCH = X64
+To create a release build:
 
-TOOL_CHAIN_TAG = VS2015x86 (or VS2013x86, etc.)
+```sh
+git tag v1.1.0
+git push origin v1.1.0
+```
 
-4) open admin command prompt and change path to [UDK2015]/BaseTools
+After the workflow finishes, open the GitHub release for that tag and download `v3x4.efi` and, when generation succeeds, `v3x4.ffs`. The workflow also keeps a normal Actions artifact named `v3x4-X64-RELEASE-GCC5` for debugging/manual downloads.
 
-5) Execute edksetup(.bat)
+## Local edk2 Build
 
-6) Execute build. If it prints "- Done -" all is fine and the UDK2015 build environment is properly setup  ...
- 
-7) Unpack/copy source into [UDK2015]/BaseTools/MdeModulePkg/v3x4 (create this subdirectory)
+One simple local layout is to copy this module into `MdeModulePkg/v3x4` inside an edk2 checkout, add `MdeModulePkg/v3x4/v3x4.inf` to `MdeModulePkg/MdeModulePkg.dsc`, then run:
 
-8) Edit file [UDK2015]/BaseTools/MdeModulePkg/MdeModulePkg.dsc and add "MdeModulePkg/v3x4/v3x4.inf" to [Components] section
+```sh
+make -C BaseTools
+. ./edksetup.sh
+build -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/v3x4/v3x4.inf -a X64 -b RELEASE -t GCC5
+```
 
-9) Execute build again. Wait for "- Done -" and take compiled EFI DXE driver from:
-[UDK2015]/BaseTools/Build/MdeModule/RELEASE_VS2015x86/X64/MdeModulePkg/v3x4/v3x4/OUTPUT/v3x4.efi
+The `.efi` output is typically under:
+
+```text
+Build/MdeModule/RELEASE_GCC5/X64/MdeModulePkg/v3x4/v3x4/OUTPUT/v3x4.efi
+```
+
+## Legacy Usage Notes
+
+The original usage model still applies: load `v3x4.efi` from an EFI shell or add it as a boot-time UEFI driver, for example:
+
+```text
+bcfg driver add 0 fs1:\EFI\Boot\v3x4.efi "V3 Full Turbo"
+```
+
+Keep a recovery path available before experimenting, such as temporarily removing the EFI binary from the boot partition.

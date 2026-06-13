@@ -1,7 +1,8 @@
-#include <PiPei.h>
-#include <Library/UefiLib.h>
+#include <Uefi.h>
+#include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
-#include <Library/PrePiLib.h>
+#include <Library/MemoryAllocationLib.h>
+#include <Library/UefiLib.h>
 #include <Protocol/MpService.h>
 
 // SVID fixed VCCIN voltages
@@ -94,18 +95,38 @@
 #define				CPUID_VERSION_INFO			0x1
 #define				CPUID_BRAND_STRING_BASE			0x80000002
 #define				CPUID_BRAND_STRING_LEN			0x30
+#define				CPUID_BYPASS_CHECK			0xFFFFFFFF
 #define				MSR_FLEX_RATIO_OC_LOCK_BIT		0x100000			// bit 20, set to lock MSR 0x194
 #define				MSR_TURBO_RATIO_SEMAPHORE_BIT		0x8000000000000000		// set to execute changes writen to MSR 0x1AD, 0x1AE, 0x1AF
 #define				MSR_BIOS_NO_UCODE_PATCH			0x0
 #define				UNLIMITED_POWER				0x00FFFFFF00FFFFFF
 
 // build options
-#define				BUILD_RELEASE_VER			L"v3x4-v1.00-release"		// build version
-#define				BUILD_TARGET_CPU_DESC			L"\"Haswell-E/EP(4S)/EX\""	// target CPU description (codename)
-#define				BUILD_TARGET_CPUID_SIGN_1		0x306F2				// target CPUID, set 0xFFFFFFFF to bypass checking
-#define				BUILD_TARGET_CPUID_SIGN_2		0x306F3				// target CPUID, set 0xFFFFFFFF to bypass checking
-#define				BUILD_TARGET_CPUID_SIGN_3		0x306F4				// target CPUID, set 0xFFFFFFFF to bypass checking
-#define				MAX_PACKAGE_COUNT			4				// maximum number of supported packages/sockets
+#define				BUILD_RELEASE_VER			L"v3x4-v1.01-modern"		// build version
+#define				BUILD_TARGET_CPU_DESC			L"\"Haswell-E/EP/EX v3\""	// target CPU description (codename)
+#ifndef ENABLE_BROADWELL_EP_EXPERIMENTAL
+#define				ENABLE_BROADWELL_EP_EXPERIMENTAL	0				// set to 1 for experimental Xeon E5/E7 v4 / Broadwell-EP/EX entry
+#endif
+#define				MAX_PACKAGE_COUNT			8				// maximum number of supported packages/sockets
+
+typedef struct _TARGET_CPUID {
+	UINT32			Signature;
+	CONST CHAR16		*Description;
+	BOOLEAN			Experimental;
+} TARGET_CPUID, *PTARGET_CPUID;
+
+CONST TARGET_CPUID BUILD_TARGET_CPUID_WHITELIST[] = {
+	{ 0x306F0, L"Haswell-EP/EX v3 early ES", FALSE },
+	{ 0x306F1, L"Haswell-EP/EX v3 ES/QS", FALSE },
+	{ 0x306F2, L"Haswell-EP/EX v3", FALSE },
+	{ 0x306F3, L"Haswell-EP/EX v3", FALSE },
+	{ 0x306F4, L"Haswell-EP/EX v3", FALSE },
+#if ENABLE_BROADWELL_EP_EXPERIMENTAL
+	{ 0x406F1, L"Broadwell-EP/EX v4 experimental", TRUE },
+#endif
+};
+
+#define				BUILD_TARGET_CPUID_COUNT		(sizeof(BUILD_TARGET_CPUID_WHITELIST) / sizeof(BUILD_TARGET_CPUID_WHITELIST[0]))
 
 // driver settings
 const UINTN			CPU_SET_MAX_TURBO_RATIO		=	0;				// 0 for auto max: Core turbo ratio, not to exceed fused limit, no less than MFM (8)
@@ -123,7 +144,7 @@ const UINT32 SVID_FIXED_VCCIN[MAX_PACKAGE_COUNT] \
 
 // Domain 0 (IA Core) dynamic voltage offsets per package, adjust as needed
 const UINT32 IACORE_ADAPTIVE_OFFSET[MAX_PACKAGE_COUNT] \
-	= { _DEFAULT_FVID, _DEFAULT_FVID, _DEFAULT_FVID, _DEFAULT_FVID, _DEFAULT_FVID, _DEFAULT_FVID, _DEFAULT_FVID, _DEFAULT_FVID };
+	= { _FVID_MINUS_50_MV, _FVID_MINUS_50_MV, _FVID_MINUS_50_MV, _FVID_MINUS_50_MV, _FVID_MINUS_50_MV, _FVID_MINUS_50_MV, _FVID_MINUS_50_MV, _FVID_MINUS_50_MV };
 
 // Domain 2 (CLR) dynamic voltage offsets per package, adjust as needed
 const UINT32 CLR_ADAPTIVE_OFFSET[MAX_PACKAGE_COUNT] \
@@ -178,6 +199,12 @@ UINT64				ProgramBuffer;								// general buffer for MSR data writing
 EFI_STATUS EFIAPI InitializeSystem(IN EFI_SYSTEM_TABLE *SystemTable);
 EFI_STATUS EFIAPI GatherPlatformInfo(IN OUT PPLATFORM_OBJECT *PlatformObject);
 EFI_STATUS EFIAPI EnumeratePackages(VOID);
+BOOLEAN EFIAPI IsCpuidBypassEnabled(VOID);
+CONST TARGET_CPUID *
+EFIAPI
+FindTargetCpuid(IN UINT32 Cpuid);
+VOID EFIAPI PrintTargetCpuidWhitelist(VOID);
+UINT32 EFIAPI GetMicrocodeRevision(VOID);
 BOOLEAN EFIAPI IsValidPackage(VOID);
 VOID EFIAPI ProgramPackage(IN OUT VOID *Buffer);
 VOID EFIAPI FinalizeProgramming(VOID);
@@ -222,7 +249,7 @@ EFIDriverEntry(
 	}
 
 	// program packages
-	for (ThisPackage; ThisPackage < System->Platform->Packages; ThisPackage++) {
+	for (; ThisPackage < System->Platform->Packages; ThisPackage++) {
 		// program CPU using current AP if same as current BSP
 		if (System->BootstrapProcessor == System->Package[ThisPackage].APICID) {
 			ProgramPackage(
@@ -254,7 +281,7 @@ EFIDriverEntry(
 DriverExit:
 		
 	// notify if system reboot required
-	if (System->RebootRequired == TRUE) {
+	if ((System != NULL) && (System->RebootRequired == TRUE)) {
 		Print(
 			L"!!! REBOOT REQUIRED FOR SOME SETTINGS TO TAKE EFFECT !!!\r\n\0"
 			);
@@ -374,6 +401,16 @@ GatherPlatformInfo(
 
 	// add one for initial package
 	Platform->Packages++;
+
+	if (Platform->Packages > MAX_PACKAGE_COUNT) {
+		Print(
+			L"[FAILURE] Detected %d CPU packages, but this build supports up to %d\r\n\0",
+			Platform->Packages,
+			MAX_PACKAGE_COUNT
+			);
+
+		return EFI_UNSUPPORTED;
+	}
 	
 	*PlatformObject = Platform;
 
@@ -440,7 +477,7 @@ EnumeratePackages(
 	ThisPackage = 0;
 	
 	// initialize processor data
-	for (ThisPackage; ThisPackage < System->Platform->Packages; ThisPackage++) {
+	for (; ThisPackage < System->Platform->Packages; ThisPackage++) {
 		// VCCIN
 		System->Package[ThisPackage].InputVoltage = SVID_FIXED_VCCIN[ThisPackage];		
 		
@@ -455,6 +492,11 @@ EnumeratePackages(
 
 		// Specification
 		k = 0;
+		SetMem(
+			processor_brand_string_buffer,
+			sizeof(processor_brand_string_buffer),
+			0
+			);
 
 		for (UINTN i = 0; i < 3; i++) {
 			AsmCpuid(
@@ -476,13 +518,13 @@ EnumeratePackages(
 			}
 		}
 
-		processor_brand_string_buffer[CPUID_BRAND_STRING_LEN + 1] = '\0';
+		processor_brand_string_buffer[CPUID_BRAND_STRING_LEN] = '\0';
 
 		// convert ASCII to Unicode
 		AsciiStrToUnicodeStrS(
 			processor_brand_string_buffer,
 			System->Package[ThisPackage].Specification,
-			CPUID_BRAND_STRING_LEN + 1
+			sizeof(System->Package[ThisPackage].Specification) / sizeof(CHAR16)
 			);
 
 		Print(
@@ -594,43 +636,65 @@ EnumeratePackages(
 
 BOOLEAN
 EFIAPI
-IsValidPackage(
+IsCpuidBypassEnabled(
+	VOID
+) {
+	for (UINTN i = 0; i < BUILD_TARGET_CPUID_COUNT; i++) {
+		if (BUILD_TARGET_CPUID_WHITELIST[i].Signature == CPUID_BYPASS_CHECK) {
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+CONST TARGET_CPUID *
+EFIAPI
+FindTargetCpuid(
+	IN UINT32 Cpuid
+) {
+	for (UINTN i = 0; i < BUILD_TARGET_CPUID_COUNT; i++) {
+		if (BUILD_TARGET_CPUID_WHITELIST[i].Signature == Cpuid) {
+			return &BUILD_TARGET_CPUID_WHITELIST[i];
+		}
+	}
+
+	return NULL;
+}
+
+VOID
+EFIAPI
+PrintTargetCpuidWhitelist(
 	VOID
 ) {
 	Print(
-		L"Validating CPU%d for programming... \r\n\0",
-		ThisPackage
+		L"  Target CPUID whitelist:\r\n\0"
 		);
 
-	// check OC Lock Bit not set
-	ResponseBuffer = AsmReadMsr64(
-		MSR_FLEX_RATIO
-		);
-
-	if ((ResponseBuffer & MSR_FLEX_RATIO_OC_LOCK_BIT) == MSR_FLEX_RATIO_OC_LOCK_BIT) {
-		Print(
-			L"[FAILURE] Overclock Enable lock bit set\r\n\0"
-			);
-
-		return FALSE;
+	for (UINTN i = 0; i < BUILD_TARGET_CPUID_COUNT; i++) {
+		if (BUILD_TARGET_CPUID_WHITELIST[i].Signature == CPUID_BYPASS_CHECK) {
+			Print(
+				L"    0xFFFFFFFF - bypass check\r\n\0"
+				);
+		}
+		else {
+			Print(
+				L"    0x%08x - %s%s\r\n\0",
+				BUILD_TARGET_CPUID_WHITELIST[i].Signature,
+				BUILD_TARGET_CPUID_WHITELIST[i].Description,
+				BUILD_TARGET_CPUID_WHITELIST[i].Experimental ? L" [experimental]" : L""
+				);
+		}
 	}
 
-	// ensure package CPUID matches a build target CPUID
-	if ((System->Package[ThisPackage].CPUID != BUILD_TARGET_CPUID_SIGN_1) \
-		&& (System->Package[ThisPackage].CPUID != BUILD_TARGET_CPUID_SIGN_2) \
-		&& (System->Package[ThisPackage].CPUID != BUILD_TARGET_CPUID_SIGN_3)) {
-		Print(
-			L"[FAILURE] CPUID (0x%x) does not match any target CPUID: 0x%x, 0x%x, 0x%x\r\n\0",
-			System->Package[ThisPackage].CPUID,
-			BUILD_TARGET_CPUID_SIGN_1,
-			BUILD_TARGET_CPUID_SIGN_2,
-			BUILD_TARGET_CPUID_SIGN_3
-			);
+	return;
+}
 
-		return FALSE;
-	}
-
-	// verify no processor microcode revision patch loaded
+UINT32
+EFIAPI
+GetMicrocodeRevision(
+	VOID
+) {
 	AsmWriteMsr64(
 		MSR_IA32_BIOS_SIGN_ID,
 		0
@@ -648,9 +712,101 @@ IsValidPackage(
 		MSR_IA32_BIOS_SIGN_ID
 		);
 
-	if (((ResponseBuffer >> 32) & 0xFF) != MSR_BIOS_NO_UCODE_PATCH) {
+	return (UINT32)(ResponseBuffer >> 32);
+}
+
+BOOLEAN
+EFIAPI
+IsValidPackage(
+	VOID
+) {
+	UINT32 current_cpuid;
+	UINT32 microcode_revision;
+	UINT64 flex_ratio_msr;
+	BOOLEAN oc_lock_enabled;
+	BOOLEAN cpuid_bypass_enabled;
+	CONST TARGET_CPUID *target_cpuid;
+
+	AsmCpuid(
+		CPUID_VERSION_INFO,
+		&current_cpuid,
+		NULL,
+		NULL,
+		NULL
+		);
+
+	System->Package[ThisPackage].CPUID = current_cpuid;
+
+	Print(
+		L"Validating CPU%d for programming...\r\n\0",
+		ThisPackage
+		);
+
+	Print(
+		L"  Current CPUID: 0x%08x\r\n\0",
+		current_cpuid
+		);
+
+	PrintTargetCpuidWhitelist();
+
+	flex_ratio_msr = AsmReadMsr64(
+		MSR_FLEX_RATIO
+		);
+
+	oc_lock_enabled = ((flex_ratio_msr & MSR_FLEX_RATIO_OC_LOCK_BIT) == MSR_FLEX_RATIO_OC_LOCK_BIT);
+
+	Print(
+		L"  OC Lock: %s (MSR 0x194 = 0x%08x%08x)\r\n\0",
+		oc_lock_enabled ? L"set" : L"clear",
+		(UINT32)(flex_ratio_msr >> 32),
+		(UINT32)flex_ratio_msr
+		);
+
+	microcode_revision = GetMicrocodeRevision();
+
+	Print(
+		L"  Microcode revision: 0x%08x\r\n\0",
+		microcode_revision
+		);
+
+	// check OC Lock Bit not set
+	if (oc_lock_enabled) {
 		Print(
-			L"[FAILURE] Processor microcode update revision detected\r\n\0"
+			L"[FAILURE] Overclock Enable lock bit set\r\n\0"
+			);
+
+		return FALSE;
+	}
+
+	cpuid_bypass_enabled = IsCpuidBypassEnabled();
+	target_cpuid = FindTargetCpuid(current_cpuid);
+
+	// ensure package CPUID matches a build target CPUID unless bypass is enabled
+	if ((cpuid_bypass_enabled == FALSE) && (target_cpuid == NULL)) {
+		Print(
+			L"[FAILURE] CPUID 0x%08x does not match the target CPUID whitelist\r\n\0",
+			current_cpuid
+			);
+
+		return FALSE;
+	}
+
+	if (cpuid_bypass_enabled == TRUE) {
+		Print(
+			L"[WARNING] CPUID whitelist bypass enabled by 0xFFFFFFFF target entry\r\n\0"
+			);
+	}
+	else if (target_cpuid->Experimental == TRUE) {
+		Print(
+			L"[WARNING] Experimental CPU target: turbo ratio programming is not guaranteed; OC Mailbox voltage experiments may be more likely to work\r\n\0"
+			);
+	}
+
+	// verify no processor microcode revision patch loaded
+	if (microcode_revision != MSR_BIOS_NO_UCODE_PATCH) {
+		Print(
+			L"[FAILURE] Processor microcode update revision 0x%08x detected\r\n\0",
+			microcode_revision
 			);
 
 		return FALSE;
