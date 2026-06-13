@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: X64 RELEASE GCC5
@@ -57,13 +60,27 @@ jobs:
       - name: Build EFI
         working-directory: edk2
         run: |
-          make -C BaseTools
-          . ./edksetup.sh
-          build -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/v3x4/v3x4.inf -a X64 -b RELEASE -t GCC5
+          set -o pipefail
           mkdir -p ../artifacts
-          efi_path="$(find Build -path '*OUTPUT/v3x4.efi' -print -quit)"
+          (
+            set -e
+            make -C BaseTools
+            . ./edksetup.sh
+            build -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/v3x4/v3x4.inf -a X64 -b RELEASE -t GCC5
+          ) 2>&1 | tee ../artifacts/build.log
+          build_status=${PIPESTATUS[0]}
+          if [ "$build_status" -ne 0 ]; then
+            echo "::group::Build failure tail"
+            tail -n 120 ../artifacts/build.log
+            echo "::endgroup::"
+            message="$(tail -n 40 ../artifacts/build.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Build EFI failed::$message"
+            exit "$build_status"
+          fi
+          efi_path="$(find Build -iname 'v3x4.efi' -print -quit)"
           if [ -z "$efi_path" ]; then
-            echo "v3x4.efi was not produced"
+            find Build -iname '*.efi' -print | tee ../artifacts/efi-files.txt
+            echo "::error title=Build EFI failed::v3x4.efi was not produced"
             exit 1
           fi
           cp "$efi_path" ../artifacts/v3x4.efi
@@ -80,16 +97,17 @@ jobs:
           fi
 
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: v3x4-X64-RELEASE-GCC5
           path: artifacts/*
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          files: artifacts/v3x4.*
           fail_on_unmatched_files: true
           generate_release_notes: true
