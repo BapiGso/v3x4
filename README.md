@@ -70,6 +70,43 @@ git push origin v1.1.0
 
 After the workflow finishes, open the GitHub release for that tag and download `v3x4.efi` and, when generation succeeds, `v3x4.ffs`. The workflow also keeps a normal Actions artifact named `v3x4-X64-RELEASE-GCC` for debugging/manual downloads.
 
+## BIOS ROM Patch CLI
+
+`tools/v3x4_rom_cli.py` can patch a raw BIOS/BIOS-region backup without UEFITool:
+
+- Removes matching Intel microcode update blobs by filling them with `0xFF`.
+- Inserts a generated `v3x4.ffs` into the firmware volume that contains DXE Core.
+- Defaults to CPUID `0x306F2` and DXE Core GUID `D6A2CB7F-6A18-4E2F-B43B-9920A733700A`.
+- Writes a new ROM file and never overwrites the input image.
+
+Scan the backup first:
+
+```sh
+python tools/v3x4_rom_cli.py scan backup.rom --cpuid 306F2
+```
+
+Patch the backup:
+
+```sh
+python tools/v3x4_rom_cli.py patch backup.rom --ffs v3x4.ffs -o backup.v3x4.rom
+```
+
+If your BIOS tool labels the Haswell-EP microcode as `06F2`, you can use suffix matching:
+
+```sh
+python tools/v3x4_rom_cli.py patch backup.rom --cpuid 06F2 --ffs v3x4.ffs -o backup.v3x4.rom
+```
+
+Useful options:
+
+- `--dry-run` prints the planned microcode removal and FFS insertion without writing a file.
+- `--fv-offset 0x...` selects a specific firmware volume when `scan` shows more than one DXE Core candidate.
+- `--insert append` inserts at the end of the DXE Core firmware volume instead of directly after DXE Core.
+- `--allow-missing-microcode` continues when the ROM has already had the selected microcode removed.
+- `--force` overwrites an existing output ROM.
+
+Use a known-good raw backup and keep an external recovery method available before flashing. If the CLI cannot find DXE Core or enough free space, inspect the image with UEFITool and pass `--fv-offset`, or use a board-specific manual insertion flow.
+
 ## Local edk2 Build
 
 One simple local layout is to copy this module into `MdeModulePkg/v3x4` inside an edk2 checkout, add `MdeModulePkg/v3x4/v3x4.inf` to `MdeModulePkg/MdeModulePkg.dsc`, then run:
