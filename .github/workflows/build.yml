@@ -14,7 +14,7 @@ env:
 
 jobs:
   build:
-    name: X64 RELEASE GCC5
+    name: X64 RELEASE GCC
     runs-on: ubuntu-latest
 
     steps:
@@ -66,7 +66,13 @@ jobs:
             set -e
             make -C BaseTools
             . ./edksetup.sh
-            build -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/v3x4/v3x4.inf -a X64 -b RELEASE -t GCC5
+            if grep -q '^\*_*_GCC5_' Conf/tools_def.txt; then
+              tool_chain_tag=GCC5
+            else
+              tool_chain_tag=GCC
+            fi
+            echo "Using edk2 toolchain tag: ${tool_chain_tag}"
+            build -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/v3x4/v3x4.inf -a X64 -b RELEASE -t "${tool_chain_tag}"
           ) 2>&1 | tee ../artifacts/build.log
           build_status=${PIPESTATUS[0]}
           if [ "$build_status" -ne 0 ]; then
@@ -100,7 +106,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v3x4-X64-RELEASE-GCC5
+          name: v3x4-X64-RELEASE-GCC
           path: artifacts/*
           if-no-files-found: warn
 

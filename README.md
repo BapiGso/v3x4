@@ -53,7 +53,7 @@ During package validation, the driver prints:
 
 ## GitHub Actions Release Build
 
-The workflow in `.github/workflows/build.yml` builds on Ubuntu with modern edk2 and `GCC5`. It is intended to run when a version tag is pushed:
+The workflow in `.github/workflows/build.yml` builds on Ubuntu with modern edk2. It uses the modern `GCC` toolchain tag, and falls back to `GCC5` only if an older edk2 checkout still defines it. It is intended to run when a version tag is pushed:
 
 - Target: `RELEASE`
 - Architecture: `X64`
@@ -68,7 +68,7 @@ git tag v1.1.0
 git push origin v1.1.0
 ```
 
-After the workflow finishes, open the GitHub release for that tag and download `v3x4.efi` and, when generation succeeds, `v3x4.ffs`. The workflow also keeps a normal Actions artifact named `v3x4-X64-RELEASE-GCC5` for debugging/manual downloads.
+After the workflow finishes, open the GitHub release for that tag and download `v3x4.efi` and, when generation succeeds, `v3x4.ffs`. The workflow also keeps a normal Actions artifact named `v3x4-X64-RELEASE-GCC` for debugging/manual downloads.
 
 ## Local edk2 Build
 
@@ -77,13 +77,13 @@ One simple local layout is to copy this module into `MdeModulePkg/v3x4` inside a
 ```sh
 make -C BaseTools
 . ./edksetup.sh
-build -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/v3x4/v3x4.inf -a X64 -b RELEASE -t GCC5
+build -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/v3x4/v3x4.inf -a X64 -b RELEASE -t GCC
 ```
 
 The `.efi` output is typically under:
 
 ```text
-Build/MdeModule/RELEASE_GCC5/X64/MdeModulePkg/v3x4/v3x4/OUTPUT/v3x4.efi
+Build/MdeModule/RELEASE_GCC/X64/MdeModulePkg/v3x4/v3x4/OUTPUT/v3x4.efi
 ```
 
 ## Legacy Usage Notes
