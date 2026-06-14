@@ -90,16 +90,18 @@ jobs:
             exit 1
           fi
           cp "$efi_path" ../artifacts/v3x4.efi
-          if command -v GenSec >/dev/null 2>&1 && command -v GenFfs >/dev/null 2>&1; then
-            if GenSec -s EFI_SECTION_PE32 -o ../artifacts/v3x4.pe32 ../artifacts/v3x4.efi && \
-               GenFfs -t EFI_FV_FILETYPE_DRIVER -g 20E8A16C-8C70-4702-8698-27AFF7281EB9 -o ../artifacts/v3x4.ffs -i ../artifacts/v3x4.pe32; then
+          gen_sec="$PWD/BaseTools/BinWrappers/PosixLike/GenSec"
+          gen_ffs="$PWD/BaseTools/BinWrappers/PosixLike/GenFfs"
+          if [ -x "$gen_sec" ] && [ -x "$gen_ffs" ]; then
+            if "$gen_sec" -s EFI_SECTION_PE32 -o ../artifacts/v3x4.pe32 ../artifacts/v3x4.efi && \
+               "$gen_ffs" -t EFI_FV_FILETYPE_DRIVER -g 20E8A16C-8C70-4702-8698-27AFF7281EB9 -o ../artifacts/v3x4.ffs -i ../artifacts/v3x4.pe32; then
               rm -f ../artifacts/v3x4.pe32
             else
               echo "::warning::Optional GenFfs step failed; EFI artifact is still available"
               rm -f ../artifacts/v3x4.pe32 ../artifacts/v3x4.ffs
             fi
           else
-            echo "::warning::GenSec/GenFfs not found; skipping optional FFS artifact"
+            echo "::warning::GenSec/GenFfs wrappers not found; skipping optional FFS artifact"
           fi
 
       - name: Upload artifacts
