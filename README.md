@@ -131,4 +131,17 @@ The original usage model still applies: load `v3x4.efi` from an EFI shell or add
 bcfg driver add 0 fs1:\EFI\Boot\v3x4.efi "V3 Full Turbo"
 ```
 
+On Windows, you can avoid typing the EFI Shell command by adding a firmware boot entry from an elevated Command Prompt or PowerShell session. First copy `v3x4.efi` to the EFI System Partition, then run:
+
+```bat
+mountvol S: /S
+bcdedit /copy {bootmgr} /d "V3 Full Turbo"
+bcdedit /set {GUID} device partition=S:
+bcdedit /set {GUID} path \EFI\Boot\v3x4.efi
+bcdedit /set {fwbootmgr} displayorder {GUID} /addfirst
+mountvol S: /D
+```
+
+Replace `{GUID}` with the identifier printed by the `bcdedit /copy` command. If a firmware only loads this file when it is registered as a UEFI driver entry, use the EFI Shell `bcfg driver add` flow above.
+
 Keep a recovery path available before experimenting, such as temporarily removing the EFI binary from the boot partition.
